@@ -60,8 +60,6 @@
     opacity: 0.9;
 }
 
-.mes_quote_tts.ready { color: #5bc46a !important; }
-
 /* 弹窗编辑器 */
 .minimax-tts-editor-mask {
     position: fixed !important; inset: 0 !important;
@@ -354,6 +352,7 @@ body.vc-call-open {
     transition: opacity 0.2s ease;
 }
 .mm-config-mask.mm-config-open { opacity: 1; pointer-events: all; }
+.mm-config-mask:not(.mm-config-open) { visibility: hidden; }
 
 .mm-config-dialog {
     width: min(920px, 96vw);
@@ -500,6 +499,37 @@ body.vc-call-open {
     /* iOS home indicator safe area */
     .mm-config-header { padding-top: max(14px, env(safe-area-inset-top, 14px)); }
 }
+
+/* 扩展设置中的内嵌配置，不占用弹窗或独立滚动区域。 */
+#mm_settings { min-width: 0; }
+#mm_settings .mm-config-inline {
+    width: 100%; height: auto; max-height: none; min-width: 0;
+    background: transparent; border: 0; border-radius: 0; box-shadow: none;
+}
+#mm_settings .mm-config-header { padding: 8px 0 0; }
+#mm_settings .mm-tab-bar { flex-wrap: wrap; overflow: visible; }
+#mm_settings .mm-config-body { overflow: visible; }
+#mm_settings .mm-tab-panel { height: auto; overflow: visible; padding: 12px 0; }
+#mm_settings .mm-row { flex-wrap: wrap; }
+#mm_settings .mm-row label { min-width: 75px; }
+#mm_settings .mm-row .mm-inline-hint { flex-basis: 100%; }
+
+/* 魔法棒中的语音操作弹窗。 */
+#mm-speech-mask {
+    width: 100vw; height: 100svh; padding: 12px;
+    align-items: center; justify-content: center;
+}
+#mm-speech-mask .mm-speech-dialog {
+    width: min(440px, 100%); height: auto; max-height: 90svh; border-radius: 12px;
+}
+.mm-speech-dialog .mm-config-header { padding: 12px 16px; }
+.mm-speech-body { padding: 0 16px 16px; overflow-y: auto; }
+.mm-speech-label { font-size: 0.8rem; opacity: 0.65; }
+#mm_speech_message { display: block; width: 100%; margin: 8px 0 12px; }
+.mm-speech-actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.mm-speech-actions .menu_button { width: 100%; margin: 0; min-height: 36px; }
+.mm-speech-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+.mm-speech-actions button:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
 
 /* ── New UI elements ── */
 

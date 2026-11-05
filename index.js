@@ -31,7 +31,7 @@ const MODEL_OPTIONS = [
 ];
 
 const defaults = {
-    enabled: true, autoPlay: true, showMessageButton: true, onlyCharacter: true,
+    enabled: true, autoPlay: true, onlyCharacter: true,
     apiKey: '', groupId: '', apiHost: DEFAULT_API_HOST, model: 'speech-2.8-hd', voiceId: 'male-qn-qingse',
     speed: 1, vol: 1, pitch: 0, emotion: '', audioFormat: 'mp3', ttsLanguage: '',
     maxQuotesPerMessage: 4, minLength: 1, maxLength: 300, ignoreCodeBlocks: true,
@@ -59,7 +59,8 @@ const defaults = {
     vrmPixelRatio: 1,          // 渲染像素比（0.5~3；手机建议 1，PC 建议 1.5~2）
 };
 
-let playbackQueue = [], isPlaying = false, clickTimer = null;
+let playbackQueue = [], isPlaying = false;
+let playbackToken = 0;
 let activeAudio = new Audio();
 const localAudioCache = new Map();
 
@@ -989,18 +990,24 @@ async function importFavorites(file) {
 }
 
 // --- Player ---
-async function playNext() {
-    if (playbackQueue.length === 0) { isPlaying = false; return; }
+async function playNext(token = playbackToken) {
+    if (token !== playbackToken) return;
+    if (playbackQueue.length === 0) { isPlaying = false; refreshSpeechPanelStatus(); return; }
     isPlaying = true; const item = playbackQueue.shift();
     if (item.pauseMs) await new Promise(r => setTimeout(r, Math.max(0, Math.min(2500, Number(item.pauseMs)))));
+    if (token !== playbackToken) return;
     try {
         const blob = await getAudioBlob(item);
+        if (token !== playbackToken) return;
         const url = URL.createObjectURL(blob);
         activeAudio.src = url;
-        activeAudio.onended = () => { URL.revokeObjectURL(url); playNext(); };
-        activeAudio.onerror = () => { URL.revokeObjectURL(url); playNext(); };
+        activeAudio.onended = () => { URL.revokeObjectURL(url); playNext(token); };
+        activeAudio.onerror = () => { URL.revokeObjectURL(url); playNext(token); };
         await activeAudio.play();
-    } catch (e) { toastr.warning?.(`语音片段播放失败：${e.message}`); playNext(); }
+    } catch (e) {
+        if (token !== playbackToken) return;
+        toastr.warning?.(`语音片段播放失败：${e.message}`); playNext(token);
+    }
 }
 
 async function formatWithSecondaryApi(m) {
@@ -1175,7 +1182,7 @@ async function generateMessageSpeech(id, forced = false) {
         if (!s().serverHistory[key]) s().serverHistory[key] = { activeIndex: 0, versions: [] };
         s().serverHistory[key].versions.push({ items, timestamp: Date.now() });
         s().serverHistory[key].activeIndex = s().serverHistory[key].versions.length - 1;
-        saveSettingsDebounced(); refreshAllMessageButtons(); injectBubbles(id); return true;
+        saveSettingsDebounced(); refreshSpeechPanelStatus(); injectBubbles(id); return true;
     } catch (e) { toastr.error('生成失败: ' + e.message); return false; }
 }
 
@@ -1217,8 +1224,10 @@ async function playGeneratedMessage(id) {
     const { key } = getMessageData(id); const h = s().serverHistory[key];
     if (!h?.versions[h.activeIndex]) return false;
     playbackQueue = [...h.versions[h.activeIndex].items];
+    playbackToken++;
     activeAudio.pause(); activeAudio.src = '';
-    if (!isPlaying) playNext();
+    playNext();
+    refreshSpeechPanelStatus();
     setTimeout(() => saveSettingsDebounced(), 2000);
     return true;
 }
@@ -1239,25 +1248,6 @@ function refreshBubbleStates(mesid) {
     mesEl.querySelectorAll('.mm-bubble').forEach(bubble => {
         const item = items[Number(bubble.dataset.segidx)];
         if (item) bubble.classList.toggle('mm-bubble-cached', isBubbleCached(item));
-    });
-}
-
-function refreshAllMessageButtons() {
-    document.querySelectorAll('#chat .mes[mesid]').forEach(el => {
-        const id = el.getAttribute('mesid'), { message, key } = getMessageData(id);
-        if (!message || message.is_system || /class="/.test(message.mes || '')) return; // 跳过系统/HTML消息
-        const extra = el.querySelector('.extraMesButtons'); if (!extra) return;
-        let btn = el.querySelector('.mes_quote_tts');
-        if (!btn) { btn = document.createElement('div'); btn.className = 'mes_button mes_quote_tts fa-solid fa-volume-high'; extra.appendChild(btn); }
-        const h = s().serverHistory[key];
-        let ready;
-        if (s().showBubbles && h?.versions?.[h.activeIndex]?.items?.length > 0) {
-            // 气泡模式：全部段落都已缓存才亮绿灯
-            ready = h.versions[h.activeIndex].items.filter(it => !it.pauseMs && it.text).every(isBubbleCached);
-        } else {
-            ready = !!(h?.versions?.length > 0);
-        }
-        btn.classList.toggle('ready', ready);
     });
 }
 
@@ -1411,19 +1401,21 @@ function openParamsEditor(id) {
             if (h.versions.length <= 1) {
                 // 最后一个版本也删掉，清空整条记录
                 delete s().serverHistory[key];
-                saveSettingsDebounced(); refreshAllMessageButtons();
+                saveSettingsDebounced();
                 $('#minimax_quote_tts_editor').remove();
+                refreshSpeechPanelStatus();
                 return;
             }
             h.versions.splice(h.activeIndex, 1);
             h.activeIndex = Math.min(h.activeIndex, h.versions.length - 1);
-            saveSettingsDebounced(); refreshAllMessageButtons();
+            saveSettingsDebounced(); refreshSpeechPanelStatus();
             render();
         });
         const invalidateBubbles = () => {
+            refreshSpeechPanelStatus();
             const textEl = document.querySelector(`#chat .mes[mesid="${id}"] .mes_text`);
             if (textEl) textEl.removeAttribute('data-mm-bub-ver');
-            setTimeout(() => { injectBubbles(id); refreshBubbleStates(id); refreshAllMessageButtons(); }, 100);
+            setTimeout(() => { injectBubbles(id); refreshBubbleStates(id); }, 100);
         };
         $('#minimax_quote_tts_editor .editor-close').on('click', () => { $('#minimax_quote_tts_editor').remove(); invalidateBubbles(); });
         $('#minimax_quote_tts_editor .edit-v').on('change input', function(){
@@ -1432,7 +1424,7 @@ function openParamsEditor(id) {
             else { v.items[idx].options[p] = val; } v.items[idx].serverPath = null;
         });
         $('#minimax_quote_tts_editor .editor-save-only').on('click', () => { saveSettingsDebounced(); toastr.success('已保存'); });
-        $('#minimax_quote_tts_editor .editor-confirm').on('click', () => { saveSettingsDebounced(); $('#minimax_quote_tts_editor').remove(); refreshAllMessageButtons(); invalidateBubbles(); });
+        $('#minimax_quote_tts_editor .editor-confirm').on('click', () => { saveSettingsDebounced(); $('#minimax_quote_tts_editor').remove(); invalidateBubbles(); });
         $('#minimax_quote_tts_editor select.edit-v').each(function(){ $(this).val(v.items[$(this).data('idx')].options.model); });
     }; render();
 }
@@ -1447,21 +1439,188 @@ function refreshAllLlmPresetSelects() {
     });
 }
 
+function refreshSpeechPanel() {
+    const select = document.getElementById('mm_speech_message');
+    if (!select || select.disabled) return;
+    const previous = select.value;
+    const { chat = [] } = getContext();
+    const messages = chat.map((message, id) => ({ message, id })).filter(({ message }) =>
+        message && !message.is_system && (!s().onlyCharacter || !message.is_user)
+        && String(message.mes || '').trim() && !/class="/.test(message.mes || ''));
+    select.replaceChildren(...messages.map(({ message, id }) => {
+        const option = document.createElement('option');
+        option.value = String(id);
+        const preview = String(message.mes).replace(/\s+/g, ' ').trim();
+        option.textContent = `#${id + 1} ${message.name || '角色'}：${preview.slice(0, 70)}${preview.length > 70 ? '…' : ''}`;
+        return option;
+    }));
+    select.value = messages.some(({ id }) => String(id) === previous)
+        ? previous : String(messages.at(-1)?.id ?? '');
+    refreshSpeechPanelStatus();
+}
+
+function refreshSpeechPanelStatus() {
+    const select = document.getElementById('mm_speech_message');
+    if (!select || select.disabled) return;
+    const hasMessage = select.value !== '';
+    const history = hasMessage ? s().serverHistory[getMessageData(Number(select.value)).key] : null;
+    const version = history?.versions?.[history.activeIndex];
+    const hasSpeech = !!version?.items?.some(item => item.text);
+    document.getElementById('mm_speech_status').textContent = !hasMessage
+        ? '当前聊天没有可配音的角色消息。'
+        : hasSpeech ? `版本 ${history.activeIndex + 1}/${history.versions.length}，共 ${version.items.filter(item => item.text).length} 段台词。`
+        : '尚未生成语音。';
+    document.getElementById('mm_speech_generate').disabled = !hasMessage;
+    document.getElementById('mm_speech_regenerate').disabled = !hasMessage;
+    document.getElementById('mm_speech_play').disabled = !hasSpeech && !isPlaying;
+    document.getElementById('mm_speech_play').textContent = isPlaying ? '停止' : '播放';
+    document.getElementById('mm_speech_edit').disabled = !hasSpeech;
+}
+
+function stopMessagePlayback() {
+    playbackQueue = [];
+    playbackToken++;
+    activeAudio.onended = null; activeAudio.onerror = null;
+    activeAudio.pause();
+    if (activeAudio.src.startsWith('blob:')) URL.revokeObjectURL(activeAudio.src);
+    activeAudio.removeAttribute('src');
+    isPlaying = false;
+}
+
+function openSpeechPanel() {
+    if (!document.getElementById('mm-speech-mask')) {
+        document.documentElement.insertAdjacentHTML('beforeend', `
+<div id="mm-speech-mask" class="mm-config-mask">
+  <div class="mm-config-dialog mm-speech-dialog" role="dialog" aria-modal="true" aria-labelledby="mm_speech_title">
+    <div class="mm-config-header">
+      <strong id="mm_speech_title">MINIMAX TTS</strong>
+      <button id="mm_speech_close" class="mm-config-close" title="关闭" aria-label="关闭语音窗口">✕</button>
+    </div>
+    <div class="mm-speech-body">
+      <label for="mm_speech_message" class="mm-speech-label">消息</label>
+      <select id="mm_speech_message" class="text_pole"></select>
+      <p id="mm_speech_status" class="mm-desc" role="status" aria-live="polite"></p>
+      <div class="mm-speech-actions">
+        <button id="mm_speech_generate" class="menu_button" title="生成所选消息的语音">生成</button>
+        <button id="mm_speech_play" class="menu_button" title="播放当前版本的语音">播放</button>
+        <button id="mm_speech_regenerate" class="menu_button" title="重新生成一个版本">重试</button>
+        <button id="mm_speech_edit" class="menu_button" title="编辑参数和版本">编辑</button>
+      </div>
+    </div>
+  </div>
+</div>`);
+        const mask = document.getElementById('mm-speech-mask');
+        const close = () => mask.classList.remove('mm-config-open');
+        document.getElementById('mm_speech_close').addEventListener('click', close);
+        mask.addEventListener('click', event => { if (event.target === mask) close(); });
+        mask.addEventListener('keydown', event => { if (event.key === 'Escape') close(); });
+        document.getElementById('mm_speech_message').addEventListener('change', refreshSpeechPanelStatus);
+        const generate = async forced => {
+            const select = document.getElementById('mm_speech_message');
+            if (select.disabled || select.value === '') return;
+            const id = Number(select.value);
+            const { key } = getMessageData(id);
+            const status = document.getElementById('mm_speech_status');
+            const controls = [select, ...document.querySelectorAll('#mm-speech-mask .mm-speech-actions button')];
+            controls.forEach(control => { control.disabled = true; });
+            stopMessagePlayback();
+            status.textContent = forced ? '正在重试…' : '正在生成…';
+            try {
+                if (!await generateMessageSpeech(id, forced)) {
+                    status.textContent = '生成失败，请查看错误提示后重试。';
+                    return;
+                }
+                if (getMessageData(id).key !== key) {
+                    status.textContent = '聊天已切换，请重新选择消息。';
+                    return;
+                }
+                const history = s().serverHistory[key];
+                const items = history?.versions?.[history.activeIndex]?.items?.filter(item => item.text) || [];
+                if (!items.length) {
+                    status.textContent = '没有提取到可朗读的台词，请检查格式化或正则规则。';
+                    return;
+                }
+                for (let i = 0; i < items.length; i++) {
+                    if (getMessageData(id).key !== key) {
+                        status.textContent = '聊天已切换，请重新选择消息。';
+                        return;
+                    }
+                    status.textContent = `正在生成 ${i + 1}/${items.length}…`;
+                    await getAudioBlob(items[i]);
+                }
+                if (getMessageData(id).key !== key) {
+                    status.textContent = '聊天已切换，请重新选择消息。';
+                    return;
+                }
+                saveSettingsDebounced();
+                refreshBubbleStates(id);
+                status.textContent = `已生成 ${items.length} 段语音。`;
+            } catch (error) {
+                status.textContent = '操作失败：' + error.message;
+            } finally {
+                const result = status.textContent;
+                controls.forEach(control => { control.disabled = false; });
+                refreshSpeechPanel();
+                status.textContent = result;
+            }
+        };
+        document.getElementById('mm_speech_generate').addEventListener('click', () => generate(false));
+        document.getElementById('mm_speech_regenerate').addEventListener('click', () => generate(true));
+        document.getElementById('mm_speech_play').addEventListener('click', () => {
+            if (isPlaying) {
+                stopMessagePlayback();
+                refreshSpeechPanelStatus();
+                return;
+            }
+            const select = document.getElementById('mm_speech_message');
+            if (select.value !== '') playGeneratedMessage(Number(select.value));
+        });
+        document.getElementById('mm_speech_edit').addEventListener('click', () => {
+            const id = Number(document.getElementById('mm_speech_message').value);
+            openParamsEditor(id);
+        });
+    }
+    refreshSpeechPanel();
+    const select = document.getElementById('mm_speech_message');
+    document.getElementById('mm-speech-mask').classList.add('mm-config-open');
+    select.focus();
+}
+
 function createUi() {
     // 在魔法棒菜单（左下角）添加入口
-    const wandHtml = `<div id="mm_wand_item" class="list-group-item flex-container flexGap5" title="MINIMAX TTS V1.1 配置"><div class="fa-solid fa-volume-high extensionsMenuExtensionButton"></div>MINIMAX TTS</div>`;
+    const wandHtml = `<div id="mm_wand_item" class="list-group-item flex-container flexGap5" title="MINIMAX TTS 语音生成"><div class="fa-solid fa-volume-high extensionsMenuExtensionButton"></div>MINIMAX TTS</div>`;
     $('#extensionsMenu').append(wandHtml);
     $('#mm_wand_item').on('click', () => {
         // 关闭魔法棒菜单
         const menu = document.getElementById('extensionsMenu');
         if (menu) menu.style.display = 'none';
-        openConfigPanel();
+        openSpeechPanel();
     });
+
+    $('#extensions_settings').append(`
+<div id="mm_settings" class="extension_container">
+  <div class="inline-drawer">
+    <div id="mm_settings_toggle" class="inline-drawer-toggle inline-drawer-header">
+      <b>MINIMAX TTS</b>
+      <div class="fa-solid fa-circle-chevron-down inline-drawer-icon down"></div>
+    </div>
+    <div class="inline-drawer-content"><div id="mm_settings_content"></div></div>
+  </div>
+</div>`);
+    $('#mm_settings_toggle').on('click', renderConfigPanel);
 
     loadSettings();
     refreshAllLlmPresetSelects();
     eventSource.on(event_types.CHARACTER_SELECTED, () => { if (document.getElementById('mm_b_rows')) renderBindings(); });
     eventSource.on(event_types.CHAT_CHANGED, () => { if (document.getElementById('mm_b_rows')) renderBindings(); });
+    eventSource.on(event_types.CHAT_CHANGED, () => {
+        const select = document.getElementById('mm_speech_message');
+        if (select) select.value = '';
+        refreshSpeechPanel();
+    });
+    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, () => {
+        if (!document.getElementById('mm_speech_message')?.disabled) refreshSpeechPanel();
+    });
 }
 
 // ── 辅助函数 ────────────────────────────────────────────────────────────────────
@@ -1751,11 +1910,10 @@ function renderRegexPresets() {
     });
 }
 
-function openConfigPanel() {
-    if (!document.getElementById('mm-config-mask')) {
+function renderConfigPanel() {
+    if (!document.getElementById('mm-config-dialog')) {
         const panelHtml = `
-<div id="mm-config-mask" class="mm-config-mask">
-  <div id="mm-config-dialog" class="mm-config-dialog">
+  <div id="mm-config-dialog" class="mm-config-dialog mm-config-inline">
     <div class="mm-config-header">
       <div class="mm-tab-bar" role="tablist">
         <button class="mm-tab active" data-tab="tts">TTS配置</button>
@@ -1765,7 +1923,6 @@ function openConfigPanel() {
         <button class="mm-tab" data-tab="vrm">视频通话</button>
         <button class="mm-tab" data-tab="favorites">语音收藏</button>
       </div>
-      <button class="mm-config-close" title="关闭">✕</button>
     </div>
     <div class="mm-config-body">
 
@@ -2002,8 +2159,8 @@ AI=>A I"></textarea></div>
 
     </div>
   </div>
-</div>`;
-        document.body.insertAdjacentHTML('beforeend', panelHtml);
+`;
+        document.getElementById('mm_settings_content').insertAdjacentHTML('beforeend', panelHtml);
 
         // ── Tab 切换 ──
         document.querySelectorAll('#mm-config-dialog .mm-tab').forEach(tab => {
@@ -2088,14 +2245,6 @@ AI=>A I"></textarea></div>
                     card.remove(); favoriteItemsCache = favoriteItemsCache.filter(x => x.id !== id); renderFavoriteCards(); toastr.success('已删除收藏');
                 }
             } catch (err) { toastr.error(err.message); }
-        });
-
-        // ── 关闭 ──
-        document.getElementById('mm-config-mask').addEventListener('click', function(e) {
-            if (e.target === this) this.classList.remove('mm-config-open');
-        });
-        document.querySelector('#mm-config-dialog .mm-config-close').addEventListener('click', () => {
-            document.getElementById('mm-config-mask').classList.remove('mm-config-open');
         });
 
         // ── TTS 基础 ──
@@ -2662,7 +2811,6 @@ AI=>A I"></textarea></div>
         renderRules(); renderRegexPresets(); renderPreProcessRules();
         renderVcBlocks(); renderBindings();
     }
-    document.getElementById('mm-config-mask').classList.add('mm-config-open');
 }
 
 jQuery(async () => {
@@ -2674,7 +2822,6 @@ jQuery(async () => {
         console.warn('[MiniMax TTS] 旧数据迁移未完成：', error);
         toastr.warning('旧收藏迁移未完成，原数据已保留；重新加载可重试。' + error.message);
     });
-    let timer, longP;
 
     // --- 自动播放 + 气泡注入 ---
     eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, async (id) => {
@@ -2694,33 +2841,7 @@ jQuery(async () => {
         setTimeout(refreshAllBubbles, 600); // 等待消息渲染完毕后批量注入
     });
 
-    $(document).on('mousedown touchstart', '.mes_quote_tts', function(){
-        const id = Number($(this).closest('.mes').attr('mesid')); longP=false;
-        timer = setTimeout(async () => {
-            longP = true;
-            if (s().formatterEnabled) {
-                toastr.info('生成结构中...');
-                if (await generateMessageSpeech(id, true)) toastr.success('生成成功！点击图标播放。');
-            } else { if (await generateMessageSpeech(id, true)) playGeneratedMessage(id); }
-        }, 600);
-    }).on('mouseup mouseleave touchend touchcancel', '.mes_quote_tts', () => clearTimeout(timer));
-
-    $(document).on('click', '.mes_quote_tts', function(e){
-        if(longP) return;
-        if(clickTimer) { clearTimeout(clickTimer); clickTimer = null; return; }
-        clickTimer = setTimeout(async () => {
-            clickTimer = null;
-            const id = Number($(e.target).closest('.mes').attr('mesid')), { key } = getMessageData(id);
-            if (s().formatterEnabled) {
-                if (!s().serverHistory[key] || !s().serverHistory[key].versions.length) return toastr.warning('请先长按。');
-                playGeneratedMessage(id);
-            } else { if (await generateMessageSpeech(id)) playGeneratedMessage(id); }
-        }, 250);
-    }).on('dblclick', '.mes_quote_tts', function(e){
-        e.preventDefault(); if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
-        openParamsEditor(Number($(this).closest('.mes').attr('mesid')));
-    });
-    setInterval(() => { refreshAllMessageButtons(); refreshAllBubbles(); }, 1000);
+    setInterval(refreshAllBubbles, 1000);
 
     // --- 收藏当前语音段 ---
     $(document).on('click', '.mm-bubble-fav', async function(e) {
@@ -2767,9 +2888,9 @@ jQuery(async () => {
         try {
             const blob = await getAudioBlob(item);
             $b.removeClass('mm-bubble-loading').addClass('mm-bubble-playing');
-            // 请求完成后立即刷新缓存状态（气泡变绿，喇叭全绿检查）
+            // 请求完成后立即刷新缓存状态。
             refreshBubbleStates(mesid);
-            refreshAllMessageButtons();
+            refreshSpeechPanelStatus();
             const url = URL.createObjectURL(blob);
             const audio = new Audio(url);
             audio.onended  = () => { URL.revokeObjectURL(url); $b.removeClass('mm-bubble-playing'); };
@@ -3326,8 +3447,7 @@ async function vcInjectCallRecord(callLog) {
     s().serverHistory[key].activeIndex = s().serverHistory[key].versions.length - 1;
     saveSettingsDebounced();
 
-    // 刷新所有消息按钮，让注入消息上的 mes_quote_tts 显示 ready（绿色）
-    refreshAllMessageButtons();
+    refreshSpeechPanelStatus();
     // 注入气泡：serverPath 已写入，气泡将直接显示为绿色（已缓存）
     if (s().showBubbles) injectBubbles(newId);
 }
