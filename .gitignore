@@ -1,0 +1,8 @@
+node_modules/
+coverage/
+*.local.json
+.env
+.env.*
+!.env.example
+output/playwright/
+.playwright-cli/

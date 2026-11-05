@@ -1,0 +1,8 @@
+{
+  "name": "minimax-quote-tts-server",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "description": "SillyTavern server plugin for MINIMAX TTS V1.1 (API proxy, managed audio cache, and persistent favorites)"
+}

@@ -1,0 +1,13 @@
+{
+  "display_name": "MINIMAX TTS",
+  "loading_order": 20,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "yanhyhuan",
+  "version": "1.1.0",
+  "homePage": "https://github.com/yanhyhuan/tavern-minimax-tts",
+  "description": "MINIMAX TTS V1.1：AI情感导演、角色声音人格、NPC自动配音、语音/视频通话、跨设备收藏与智能音频缓存。",
+  "auto_update": false
+}
