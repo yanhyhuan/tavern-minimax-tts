@@ -50,7 +50,7 @@ const defaults = {
     vcPromptBlocks: null,      // null = 默认顺序
     vcPromptTemplates: [],     // [{name, blocks:[...], systemPrompt:''}]
     llmPreProcessRules: [],    // [{id, enabled, name, pattern, mode}] 发送前预处理（剔除think等）
-    showBubbles: false,        // 在消息下方注入可点击语音气泡
+    showBubbles: false,        // 在台词旁或消息底部显示可点击语音气泡
     vrmEnabled: false,         // 是否启用视频通话功能（显示视频悬浮球）
     vrmModelUrl: '',           // 远程 URL 或可随宿主同步的模型存储引用
     vrmFilename: '',           // 上传的 VRM 文件名（显示用）
@@ -1233,7 +1233,7 @@ async function playGeneratedMessage(id) {
 }
 
 function isBubbleCached(item) {
-    if (!item || item.pauseMs) return false;
+    if (!String(item?.text || '').trim()) return false;
     if (item.serverPath) return true;
     const cacheKey = audioCacheKey(item);
     return localAudioCache.has(cacheKey);
@@ -1299,17 +1299,16 @@ function injectBubbles(mesid) {
     if (!s().showBubbles) return;
     if (document.getElementById('minimax_quote_tts_editor')) return; // 参数编辑器打开时不注入
     const { message, key } = getMessageData(mesid);
-    // 跳过系统消息；跳过含 HTML class 属性的注入消息（除非是 VC 通话记录）
+    // 已生成的角色台词即使原文包含 HTML，也需要显示气泡。
     if (!message || message.is_system) return;
-    if (!message.extra?.voice_call && /class="/.test(message.mes || '')) return;
     const h = s().serverHistory[key];
     const mesEl = document.querySelector(`#chat .mes[mesid="${mesid}"]`);
     if (!mesEl) return;
     const textEl = mesEl.querySelector('.mes_text');
     if (!textEl) return;
-    // 保留原始（含 pauseMs）数组供索引用，过滤后的用于实际注入
+    // 台词可以同时带有前置停顿；仅排除没有文本的纯停顿项。
     const allItems = h?.versions?.[h.activeIndex]?.items || [];
-    const items = allItems.map((it, idx) => ({ it, idx })).filter(({ it }) => !it.pauseMs && it.text);
+    const items = allItems.map((it, idx) => ({ it, idx })).filter(({ it }) => String(it?.text || '').trim());
 
     // 版本标记 + DOM 实际气泡数双重检查：
     // ST 有时仅替换 .mes_text 的 innerHTML 而不换元素，会抹掉气泡但保留 data-mm-bub-ver。
@@ -1328,7 +1327,7 @@ function injectBubbles(mesid) {
 
     const unmatched = [];
     items.forEach(({ it: item, idx }) => {
-        // segidx 使用原始数组下标，确保点击时能正确命中 items[segidx]（pauseMs 项不计）
+        // 保留原始下标，点击时能正确命中含前置停顿的台词。
         const bubble = makeBubble(mesid, idx, item, false); // 内联：仅图标
         if (!injectAfterText(textEl, item.text, bubble)) {
             unmatched.push({ item, idx }); // 找不到则归入底部条
@@ -1446,7 +1445,7 @@ function refreshSpeechPanel() {
     const { chat = [] } = getContext();
     const messages = chat.map((message, id) => ({ message, id })).filter(({ message }) =>
         message && !message.is_system && (!s().onlyCharacter || !message.is_user)
-        && String(message.mes || '').trim() && !/class="/.test(message.mes || ''));
+        && String(message.mes || '').trim());
     select.replaceChildren(...messages.map(({ message, id }) => {
         const option = document.createElement('option');
         option.value = String(id);
@@ -1957,7 +1956,7 @@ function renderConfigPanel() {
           <span class="mm-inline-hint">克隆声音使用时建议明确指定语言</span>
         </div>
         <div class="mm-row"><label>自动播放</label><input id="mm_autoplay" type="checkbox"></div>
-        <div class="mm-row"><label>语音气泡</label><input id="mm_show_bubbles" type="checkbox"><span class="mm-inline-hint">在消息下方注入气泡，点击气泡单独收听该段语音</span></div>
+        <div class="mm-row"><label>语音气泡</label><input id="mm_show_bubbles" type="checkbox"><span class="mm-inline-hint">在台词旁显示播放和收藏气泡，点击可单独收听该段语音</span></div>
         <details><summary>仅测试一次，不保存密钥</summary><div class="mm-row"><label>临时 API Key</label><input id="mm_test_key" class="text_pole" type="password" autocomplete="off" placeholder="可选：仅用于下一次测试，完成后清空"></div></details>
         <div class="mm-row" style="flex-wrap:wrap;gap:8px"><button id="mm_test_tts" class="menu_button"><i class="fa-solid fa-play"></i> 测试语音</button><button id="mm_save_test" class="menu_button" disabled>收藏测试语音</button><button id="mm_run_diagnostics" class="menu_button"><i class="fa-solid fa-stethoscope"></i> 运行插件诊断</button></div>
         <div id="mm_diagnostics_result" class="mm-desc" role="status" aria-live="polite">检查酒馆存储读写并统计收藏与缓存；不会显示 API Key 或调用付费合成。</div>

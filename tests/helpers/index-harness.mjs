@@ -49,7 +49,7 @@ export async function loadIndex({ fetchImpl, settings = {}, ttStore = null, fetc
             localStoreGetJson, localStoreSetJson, localStoreGetBlob, localStoreSetBlob,
             favoriteRequest, getFavoriteAudioBlob, uploadToSTServer, getAudioCacheStatsUnified,
             cleanupAudioCacheUnified, migrateLegacyStorage, vrmServerUpload, loadConfiguredVrmModel,
-            requestTtsAudioBlob,
+            requestTtsAudioBlob, isBubbleCached,
             getSettings: s,
             setVrmModule(module) { vrmModule = module; },
             skipBrowserMigration() { readLegacyBrowserValue = async () => true; },
