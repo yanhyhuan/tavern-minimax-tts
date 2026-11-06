@@ -642,25 +642,6 @@ body.vc-call-open {
     border-color: rgba(128,128,128,0.4);
 }
 
-/* 底部条气泡：药丸形，带文字预览 */
-.mm-bubble-strip {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    margin-top: 8px;
-    padding-top: 6px;
-    border-top: 1px solid rgba(128,128,128,0.15);
-}
-.mm-bubble-strip .mm-bubble {
-    width: auto;
-    height: auto;
-    border-radius: 20px;
-    padding: 3px 9px;
-    font-size: 0.73rem;
-    max-width: 200px;
-    text-overflow: ellipsis;
-}
-
 .mm-bubble.mm-bubble-loading {
     opacity: 0.35;
     cursor: wait;
@@ -740,20 +721,18 @@ body.vc-call-open {
 .mm-voice-lib-content { padding:8px 2px 2px; }
 .mm-voice-lib-content[hidden] { display:none !important; }
 /* V6.1.1: playback and favorite are independent, equal-size touch targets */
-.mm-bubble { display:inline-flex; align-items:center; justify-content:center; gap:5px; width:auto; height:auto; min-width:0; min-height:0; padding:0; margin:0 3px; overflow:visible; border:0; border-radius:0; background:transparent; color:inherit; opacity:1; vertical-align:middle; }
+.mm-bubble { display:inline-flex; align-items:center; justify-content:center; gap:5px; width:auto; height:auto; min-width:0; min-height:0; padding:0; margin:0 3px; overflow:visible; border:0; border-radius:0; background:transparent; color:inherit; opacity:1; vertical-align:middle; cursor:default; }
 .mm-bubble:hover { background:transparent; border-color:transparent; }
 .mm-bubble.mm-bubble-cached, .mm-bubble.mm-bubble-playing, .mm-bubble.mm-bubble-loading { background:transparent !important; border-color:transparent !important; color:inherit !important; opacity:1; }
-.mm-bubble-play { display:inline-flex; align-items:center; justify-content:center; flex:0 0 20px; width:20px; height:20px; min-width:20px; min-height:20px; box-sizing:border-box; border-radius:50%; border:1px solid rgba(128,128,128,.22); background:rgba(128,128,128,.12); color:inherit; font-size:11px; line-height:1; }
+.mm-bubble-play { display:inline-flex; align-items:center; justify-content:center; flex:0 0 20px; width:20px; height:20px; min-width:20px; min-height:20px; margin:0; padding:0; box-sizing:border-box; border-radius:50%; border:1px solid rgba(128,128,128,.22); background:rgba(128,128,128,.12); color:inherit; font-size:11px; line-height:1; cursor:pointer; touch-action:manipulation; -webkit-tap-highlight-color:transparent; }
 .mm-bubble-play i { display:block; margin:0; }
 .mm-bubble.mm-bubble-cached .mm-bubble-play { background:rgba(76,175,136,.15); border-color:rgba(76,175,136,.45); color:#4caf88; }
 .mm-bubble.mm-bubble-playing .mm-bubble-play { background:rgba(70,145,255,.2); border-color:rgba(70,145,255,.55); color:#4691ff; }
 .mm-bubble.mm-bubble-loading .mm-bubble-play { opacity:.45; }
-.mm-bubble-text { min-width:0; }
 .mm-bubble-fav { display:inline-flex; align-items:center; justify-content:center; box-sizing:border-box; flex:0 0 20px; width:20px; height:20px; min-width:20px; min-height:20px; margin:0 0 0 2px; padding:0; border:1px solid rgba(214,168,60,.38); border-radius:50%; background:rgba(214,168,60,.10); color:#d6a83c; font-size:12px; line-height:1; cursor:pointer; touch-action:manipulation; -webkit-tap-highlight-color:transparent; }
 .mm-bubble-fav.is-favorited { background:rgba(214,168,60,.2); border-color:rgba(214,168,60,.65); color:#d6a83c; }
 .mm-bubble-fav:active { transform:scale(.92); background:rgba(214,168,60,.25); }
 .mm-bubble-fav:disabled { opacity:.5; }
-.mm-bubble-strip .mm-bubble { padding:3px 7px; border-radius:20px; background:rgba(128,128,128,.08); }
 @media (max-width:600px) {
   .mm-voice-library-head { gap:8px; }
   .mm-voice-library-details summary { min-height:44px; }

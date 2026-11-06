@@ -50,7 +50,7 @@ const defaults = {
     vcPromptBlocks: null,      // null = 默认顺序
     vcPromptTemplates: [],     // [{name, blocks:[...], systemPrompt:''}]
     llmPreProcessRules: [],    // [{id, enabled, name, pattern, mode}] 发送前预处理（剔除think等）
-    showBubbles: false,        // 在台词旁或消息底部显示可点击语音气泡
+    showBubbles: false,        // 在台词旁显示语音播放和收藏按钮
     vrmEnabled: false,         // 是否启用视频通话功能（显示视频悬浮球）
     vrmModelUrl: '',           // 远程 URL 或可随宿主同步的模型存储引用
     vrmFilename: '',           // 上传的 VRM 文件名（显示用）
@@ -62,6 +62,7 @@ const defaults = {
 let playbackQueue = [], isPlaying = false;
 let playbackToken = 0;
 let activeAudio = new Audio();
+let activeBubblePlayback = null;
 const localAudioCache = new Map();
 
 function s() { return extension_settings[MODULE_NAME]; }
@@ -996,21 +997,27 @@ async function playNext(token = playbackToken) {
     isPlaying = true; const item = playbackQueue.shift();
     if (item.pauseMs) await new Promise(r => setTimeout(r, Math.max(0, Math.min(2500, Number(item.pauseMs)))));
     if (token !== playbackToken) return;
+    let url, completed = false;
+    const next = error => {
+        if (completed) return;
+        completed = true;
+        if (url) URL.revokeObjectURL(url);
+        if (token !== playbackToken) return;
+        if (error) toastr.warning?.(`语音片段播放失败：${error}`);
+        void playNext(token);
+    };
     try {
         const blob = await getAudioBlob(item);
         if (token !== playbackToken) return;
-        const url = URL.createObjectURL(blob);
+        url = URL.createObjectURL(blob);
         activeAudio.src = url;
-        activeAudio.onended = () => { URL.revokeObjectURL(url); playNext(token); };
-        activeAudio.onerror = () => { URL.revokeObjectURL(url); playNext(token); };
+        activeAudio.onended = () => next();
+        activeAudio.onerror = () => next('无法读取音频');
         await activeAudio.play();
-    } catch (e) {
-        if (token !== playbackToken) return;
-        toastr.warning?.(`语音片段播放失败：${e.message}`); playNext(token);
-    }
+    } catch (e) { next(e.message); }
 }
 
-async function formatWithSecondaryApi(m) {
+async function formatWithSecondaryApi(m, { bypassCache = false, messageId } = {}) {
     const set = s();
     const preset = (set.llmPresets || [])[set.formatterPresetIdx];
     if (!preset) throw new Error('请先在「LLM 预设管理」中选择一个预设');
@@ -1018,14 +1025,17 @@ async function formatWithSecondaryApi(m) {
     const ctx = getContext();
     const characterName = ctx.name2 || m.name || '角色';
     const characterDescription = String(ctx.characters?.[ctx.characterId]?.description || '').slice(0, 1800);
+    const userName = String(ctx.name1 || '').trim().slice(0, 80);
+    const userDescription = String(ctx.powerUserSettings?.persona_description || '').slice(0, 1200);
     const characterKey = String(ctx.characterId ?? ctx.character_id ?? characterName);
     const voiceProfile = String(set.characterVoiceProfiles?.[characterKey] || '').slice(0, 1200);
     const contextCount = Math.max(0, Math.min(8, Number(set.directorContextCount ?? 4)));
-    const recentContext = Array.isArray(ctx.chat) ? ctx.chat.slice(-contextCount - 1, -1).map(x => `${String(x.name || (x.is_user ? '用户' : '角色')).slice(0, 40)}：${String(x.mes || '').replace(/<[^>]*>/g, ' ').slice(0, 350)}`).join('\n') : '';
+    const chat = Array.isArray(ctx.chat) ? ctx.chat : [];
+    const messageIndex = Number.isInteger(messageId) && messageId >= 0 && messageId < chat.length
+        ? messageId : chat.indexOf(m);
+    const recentContext = messageIndex < 0 ? '' : chat.slice(Math.max(0, messageIndex - contextCount), messageIndex).map(x => `${String(x.name || (x.is_user ? '用户' : '角色')).slice(0, 40)}：${String(x.mes || '').replace(/<[^>]*>/g, ' ').slice(0, 350)}`).join('\n');
     const currentText = applyPreProcessRules(m.mes);
     const mode = set.performanceMode || 'hybrid';
-    const cacheKey = String(simpleHash([characterKey, currentText, recentContext, mode, voiceProfile, set.emotionDirectorIntensity].join('\n')));
-    if (set.directorCacheEnabled && set.directorCache?.[cacheKey]) return JSON.parse(JSON.stringify(set.directorCache[cacheKey]));
     const modeInstruction = mode === 'natural'
       ? '模式：真人自然聊天。优先克制、口语化、少量停顿；除非文本明确要求，不添加笑声、叹气等音效。'
       : mode === 'immersive'
@@ -1037,7 +1047,11 @@ async function formatWithSecondaryApi(m) {
     const legacyDirectorRules = (!usesBuiltinDirectorSpec && set.emotionDirectorEnabled)
       ? `\n- **输出结构要求**：只返回合法 JSON：{"segments":[{"text":"角色实际需要朗读的台词","speaker":"角色名","emotion":"happy|sad|angry|fearful|disgusted|surprised|calm|fluent|whisper","style":"gentle|shy|tsundere|teasing|comforting|serious|excited|whisper|neutral","speed":1.0,"vol":1.0,"pitch":0,"pauseMs":180}]}。`
       : '';
-    const prompt = `${baseSysPrompt}${set.emotionDirectorEnabled || usesBuiltinDirectorSpec ? directorContextBlock + legacyDirectorRules : ''}`;
+    const speakerContextBlock = `\n\n---\n## 当前会话中的说话人和台词\n- **用户角色（user）名**：${userName || '未提供'}\n- **用户角色设定**：${userDescription || '未提供'}\n- **当前消息发送者**：${String(m.name || (m.is_user ? userName || '用户' : characterName)).slice(0, 80)}。消息正文可能包含用户角色、主要角色和其他人物的台词，消息发送者不一定是所有台词的说话人。\n- 按原文顺序完整提取当前消息中所有实际说出的台词，包括用户角色的台词，不得因说话者是 user 而遗漏。${userName ? `用户角色台词的 speaker 请填写「${userName}」。` : ''}\n- 根据上下文识别说话人；不确定时 speaker 留空。不要把被提及的人物误当说话人，也不要仅凭引号将标题、名称或心理活动视为说出的台词。不要把历史消息当成当前台词。`;
+    const prompt = `${baseSysPrompt}${set.emotionDirectorEnabled || usesBuiltinDirectorSpec ? directorContextBlock + legacyDirectorRules : ''}${speakerContextBlock}`;
+    // Include every variable part of the request, and do not reuse older cached omissions.
+    const cacheKey = `format2:${simpleHash(JSON.stringify([format, preset.url || '', preset.model || '', prompt, recentContext, currentText]))}`;
+    if (!bypassCache && set.directorCacheEnabled && set.directorCache?.[cacheKey]) return JSON.parse(JSON.stringify(set.directorCache[cacheKey]));
     try {
         let text;
         if (format === API_FORMATS.OAI) {
@@ -1145,7 +1159,7 @@ async function generateMessageSpeech(id, forced = false) {
     try {
         let raw;
         if (s().formatterEnabled) {
-            raw = await formatWithSecondaryApi(message);
+            raw = await formatWithSecondaryApi(message, { bypassCache: forced, messageId: id });
         } else {
             const cleanText = s().ignoreCodeBlocks ? message.mes.replace(/```[\s\S]*?```/g, ' ') : message.mes;
             const rules = (s().regexRules || []).filter(r => r.enabled);
@@ -1223,9 +1237,8 @@ function extractSegmentsOnly(id) {
 async function playGeneratedMessage(id) {
     const { key } = getMessageData(id); const h = s().serverHistory[key];
     if (!h?.versions[h.activeIndex]) return false;
+    stopMessagePlayback();
     playbackQueue = [...h.versions[h.activeIndex].items];
-    playbackToken++;
-    activeAudio.pause(); activeAudio.src = '';
     playNext();
     refreshSpeechPanelStatus();
     setTimeout(() => saveSettingsDebounced(), 2000);
@@ -1248,51 +1261,136 @@ function refreshBubbleStates(mesid) {
     mesEl.querySelectorAll('.mm-bubble').forEach(bubble => {
         const item = items[Number(bubble.dataset.segidx)];
         if (item) bubble.classList.toggle('mm-bubble-cached', isBubbleCached(item));
+        updateBubblePlaybackControl(bubble);
     });
 }
 
+function updateBubblePlaybackControl(bubble) {
+    const playing = activeBubblePlayback
+        && activeBubblePlayback.mesid === Number(bubble.dataset.mesid)
+        && activeBubblePlayback.segidx === Number(bubble.dataset.segidx)
+        && getMessageData(activeBubblePlayback.mesid).key === activeBubblePlayback.key;
+    const state = playing ? activeBubblePlayback.state : '';
+    bubble.classList.toggle('mm-bubble-loading', state === 'loading');
+    bubble.classList.toggle('mm-bubble-playing', state === 'playing');
+    const button = bubble.querySelector('.mm-bubble-play');
+    if (!button) return;
+    const label = state === 'loading' ? '取消播放' : state === 'playing' ? '停止这段语音' : '播放这段语音';
+    button.title = label;
+    button.setAttribute('aria-label', label);
+    const icon = button.querySelector('i');
+    if (icon) icon.className = state === 'loading' ? 'fa-solid fa-spinner fa-spin'
+        : state === 'playing' ? 'fa-solid fa-stop' : 'fa-solid fa-volume-low';
+}
+
+async function playBubbleSpeech(bubble) {
+    const mesid = Number(bubble.dataset.mesid), segidx = Number(bubble.dataset.segidx);
+    const { key } = getMessageData(mesid);
+    const history = s().serverHistory[key];
+    const item = history?.versions?.[history.activeIndex]?.items?.[segidx];
+    if (!String(item?.text || '').trim()) return;
+    if (activeBubblePlayback?.key === key && activeBubblePlayback.segidx === segidx) {
+        stopMessagePlayback();
+        refreshSpeechPanelStatus();
+        return;
+    }
+    stopMessagePlayback();
+    const token = playbackToken;
+    activeBubblePlayback = { key, mesid, segidx, state: 'loading' };
+    isPlaying = true;
+    refreshBubbleStates(mesid);
+    refreshSpeechPanelStatus();
+    const finish = error => {
+        if (token !== playbackToken) return;
+        stopMessagePlayback();
+        refreshSpeechPanelStatus();
+        if (error) toastr.error('播放失败：' + error);
+    };
+    try {
+        const blob = await getAudioBlob(item);
+        if (token !== playbackToken) return;
+        if (getMessageData(mesid).key !== key) { finish(); return; }
+        activeAudio.src = URL.createObjectURL(blob);
+        activeAudio.onended = () => finish();
+        activeAudio.onerror = () => finish('无法读取音频');
+        activeBubblePlayback.state = 'playing';
+        refreshBubbleStates(mesid);
+        refreshSpeechPanelStatus();
+        await activeAudio.play();
+    } catch (error) { finish(error.message); }
+}
+
 // 创建一个气泡元素（item 为 serverHistory 中的段落对象）
-function makeBubble(mesid, segidx, item, withText = false) {
+function makeBubble(mesid, segidx, item) {
     const el = document.createElement('span');
     el.className = 'mm-bubble';
     el.dataset.mesid = mesid;
     el.dataset.segidx = segidx;
     el.title = item.text;
-    el.innerHTML = withText
-        ? `<span class="mm-bubble-play"><i class="fa-solid fa-volume-low"></i></span><span class="mm-bubble-text">${escHtml(item.text.length > 20 ? item.text.slice(0, 20) + '…' : item.text)}</span>`
-        : `<span class="mm-bubble-play"><i class="fa-solid fa-volume-low"></i></span>`;
+    el.innerHTML = '<button type="button" class="mm-bubble-play" title="播放这段语音" aria-label="播放这段语音"><i class="fa-solid fa-volume-low"></i></button>';
     if (isBubbleCached(item)) el.classList.add('mm-bubble-cached');
     bubbleItems.set(el, item);
     const fav = document.createElement('button');
     fav.type = 'button'; fav.className = 'mm-bubble-fav'; fav.title = '收藏这段语音'; fav.setAttribute('aria-label', '收藏这段语音'); fav.textContent = '☆';
     el.appendChild(fav);
     if (favoriteCacheLoaded) updateBubbleFavoriteButton(el);
+    updateBubblePlaybackControl(el);
     return el;
 }
 
-// 在 container 的文本节点里找到 searchText，将其所在文本节点截断后插入 insertEl
-// 返回 true 表示注入成功
-function injectAfterText(container, searchText, insertEl) {
-    if (!searchText) return false;
-    // 过滤器：跳过已注入气泡内部的节点
-    const filter = {
-        acceptNode: n => n.parentElement.closest('.mm-bubble, .mm-bubble-strip')
+// 汇集正文文本，排除已插入的控件；文本节点的全局偏移可跨 HTML 格式匹配。
+function collectBubbleText(container) {
+    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+        acceptNode: node => node.parentElement?.closest('.mm-bubble, .mm-bubble-strip, script, style')
             ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
-    };
-    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, filter);
-    let node;
+    });
+    const nodes = [];
+    let text = '', node;
     while ((node = walker.nextNode())) {
-        const idx = node.textContent.indexOf(searchText);
-        if (idx < 0) continue;
-        const endIdx = idx + searchText.length;
-        const after = node.textContent.slice(endIdx);
-        node.textContent = node.textContent.slice(0, endIdx);
-        const parent = node.parentNode, next = node.nextSibling;
-        parent.insertBefore(insertEl, next);
-        if (after) parent.insertBefore(document.createTextNode(after), insertEl.nextSibling);
-        return true;
+        const start = text.length;
+        text += node.textContent;
+        nodes.push({ node, start, end: text.length });
     }
-    return false;
+    return { text, nodes };
+}
+
+// 在尚未占用的正文位置插入气泡；同一段文字不会因重复或重叠的 segment 产生多个气泡。
+function injectAfterText(container, searchText, insertEl, occupiedRanges = []) {
+    const wanted = String(searchText || '');
+    if (!wanted.trim()) return false;
+    const { text, nodes } = collectBubbleText(container);
+    const isFree = (start, end) => !occupiedRanges.some(range => start < range.end && end > range.start);
+    let match = null, index = -1;
+    while ((index = text.indexOf(wanted, index + 1)) !== -1) {
+        if (isFree(index, index + wanted.length)) {
+            match = { start: index, end: index + wanted.length };
+            break;
+        }
+    }
+    // 中文文本中，Markdown 或格式化器可能在相邻汉字之间添加或去掉空格。
+    if (/[\u3400-\u9fff\uf900-\ufaff]/.test(wanted)) {
+        const positions = [];
+        let compact = '';
+        for (let i = 0; i < text.length; i++) {
+            if (!/\s/.test(text[i])) { positions.push(i); compact += text[i]; }
+        }
+        const needle = wanted.replace(/\s/g, '');
+        let compactIndex = -1;
+        while ((compactIndex = compact.indexOf(needle, compactIndex + 1)) !== -1) {
+            const start = positions[compactIndex], end = positions[compactIndex + needle.length - 1] + 1;
+            if (isFree(start, end)) {
+                if (!match || start < match.start) match = { start, end };
+                break;
+            }
+        }
+    }
+    if (!match) return false;
+    const endNode = nodes.find(entry => match.end > entry.start && match.end <= entry.end);
+    if (!endNode) return false;
+    const after = endNode.node.splitText(match.end - endNode.start);
+    endNode.node.parentNode.insertBefore(insertEl, after);
+    occupiedRanges.push(match);
+    return true;
 }
 
 function injectBubbles(mesid) {
@@ -1310,38 +1408,28 @@ function injectBubbles(mesid) {
     const allItems = h?.versions?.[h.activeIndex]?.items || [];
     const items = allItems.map((it, idx) => ({ it, idx })).filter(({ it }) => String(it?.text || '').trim());
 
-    // 版本标记 + DOM 实际气泡数双重检查：
-    // ST 有时仅替换 .mes_text 的 innerHTML 而不换元素，会抹掉气泡但保留 data-mm-bub-ver。
-    const ver = `${key}:${h?.activeIndex}:${items.length}`;
+    // 宿主可能只重绘正文内容并保留容器；同时记录匹配数量和正文文本，避免漏匹配时反复注入。
+    const source = collectBubbleText(textEl).text;
+    const itemText = items.map(({ it, idx }) => `${idx}:${it.text}`).join('\n');
+    const ver = `inline-v2:${key}:${h?.activeIndex}:${simpleHash(itemText)}:${source.length}:${simpleHash(source)}`;
     const actualBubbles = textEl.querySelectorAll('.mm-bubble').length;
-    if (textEl.dataset.mmBubVer === ver && actualBubbles === items.length) {
-        // 版本吻合且气泡数正确 → 只刷新缓存状态，不重注入
+    if (textEl.dataset.mmBubVer === ver && actualBubbles === Number(textEl.dataset.mmBubCount)) {
         refreshBubbleStates(mesid);
         return;
     }
 
     // 清除旧气泡及版本标记
     textEl.querySelectorAll('.mm-bubble').forEach(el => el.remove());
-    textEl.querySelector('.mm-bubble-strip')?.remove();
-    if (!items.length) return; // 无数据时不写版本，让下次能重试
-
-    const unmatched = [];
+    textEl.querySelectorAll('.mm-bubble-strip').forEach(el => el.remove());
+    const occupiedRanges = [];
+    let inserted = 0;
     items.forEach(({ it: item, idx }) => {
         // 保留原始下标，点击时能正确命中含前置停顿的台词。
-        const bubble = makeBubble(mesid, idx, item, false); // 内联：仅图标
-        if (!injectAfterText(textEl, item.text, bubble)) {
-            unmatched.push({ item, idx }); // 找不到则归入底部条
-        }
+        const bubble = makeBubble(mesid, idx, item);
+        if (injectAfterText(textEl, item.text, bubble, occupiedRanges)) inserted++;
     });
-
-    // 没找到内联位置的放底部条（LLM 模式或 markdown 改变了文字）
-    if (unmatched.length) {
-        const strip = document.createElement('div');
-        strip.className = 'mm-bubble-strip';
-        unmatched.forEach(({ item, idx }) => strip.appendChild(makeBubble(mesid, idx, item, true)));
-        textEl.appendChild(strip);
-    }
     textEl.dataset.mmBubVer = ver;
+    textEl.dataset.mmBubCount = String(inserted);
 }
 
 function refreshAllBubbles() {
@@ -1356,7 +1444,10 @@ function refreshAllBubbles() {
 
 function removeAllBubbles() {
     document.querySelectorAll('.mm-bubble, .mm-bubble-strip').forEach(el => el.remove());
-    document.querySelectorAll('[data-mm-bub-ver]').forEach(el => el.removeAttribute('data-mm-bub-ver'));
+    document.querySelectorAll('[data-mm-bub-ver], [data-mm-bub-count]').forEach(el => {
+        el.removeAttribute('data-mm-bub-ver');
+        el.removeAttribute('data-mm-bub-count');
+    });
 }
 
 function openParamsEditor(id) {
@@ -1484,6 +1575,8 @@ function stopMessagePlayback() {
     if (activeAudio.src.startsWith('blob:')) URL.revokeObjectURL(activeAudio.src);
     activeAudio.removeAttribute('src');
     isPlaying = false;
+    activeBubblePlayback = null;
+    document.querySelectorAll('.mm-bubble-loading, .mm-bubble-playing').forEach(updateBubblePlaybackControl);
 }
 
 function openSpeechPanel() {
@@ -1956,7 +2049,7 @@ function renderConfigPanel() {
           <span class="mm-inline-hint">克隆声音使用时建议明确指定语言</span>
         </div>
         <div class="mm-row"><label>自动播放</label><input id="mm_autoplay" type="checkbox"></div>
-        <div class="mm-row"><label>语音气泡</label><input id="mm_show_bubbles" type="checkbox"><span class="mm-inline-hint">在台词旁显示播放和收藏气泡，点击可单独收听该段语音</span></div>
+        <div class="mm-row"><label>语音气泡</label><input id="mm_show_bubbles" type="checkbox"><span class="mm-inline-hint">点击台词旁的喇叭播放，再点停止；星标用于收藏</span></div>
         <details><summary>仅测试一次，不保存密钥</summary><div class="mm-row"><label>临时 API Key</label><input id="mm_test_key" class="text_pole" type="password" autocomplete="off" placeholder="可选：仅用于下一次测试，完成后清空"></div></details>
         <div class="mm-row" style="flex-wrap:wrap;gap:8px"><button id="mm_test_tts" class="menu_button"><i class="fa-solid fa-play"></i> 测试语音</button><button id="mm_save_test" class="menu_button" disabled>收藏测试语音</button><button id="mm_run_diagnostics" class="menu_button"><i class="fa-solid fa-stethoscope"></i> 运行插件诊断</button></div>
         <div id="mm_diagnostics_result" class="mm-desc" role="status" aria-live="polite">检查酒馆存储读写并统计收藏与缓存；不会显示 API Key 或调用付费合成。</div>
@@ -2872,33 +2965,11 @@ jQuery(async () => {
         } finally { button.disabled = false; }
     });
 
-    // --- 气泡点击播放 ---
-    $(document).on('click', '.mm-bubble', async function(e) {
-        if ($(e.target).closest('.mm-bubble-fav').length) return;
-        if ($(this).hasClass('mm-bubble-loading') || $(this).hasClass('mm-bubble-playing')) return;
-        const mesid = Number($(this).data('mesid'));
-        const segidx = Number($(this).data('segidx'));
-        const { key } = getMessageData(mesid);
-        const h = s().serverHistory[key];
-        const item = h?.versions?.[h.activeIndex]?.items?.[segidx];
-        if (!item) return;
-        const $b = $(this);
-        $b.addClass('mm-bubble-loading');
-        try {
-            const blob = await getAudioBlob(item);
-            $b.removeClass('mm-bubble-loading').addClass('mm-bubble-playing');
-            // 请求完成后立即刷新缓存状态。
-            refreshBubbleStates(mesid);
-            refreshSpeechPanelStatus();
-            const url = URL.createObjectURL(blob);
-            const audio = new Audio(url);
-            audio.onended  = () => { URL.revokeObjectURL(url); $b.removeClass('mm-bubble-playing'); };
-            audio.onerror  = () => { URL.revokeObjectURL(url); $b.removeClass('mm-bubble-playing'); };
-            await audio.play();
-        } catch(e) {
-            $b.removeClass('mm-bubble-loading mm-bubble-playing');
-            toastr.error('播放失败: ' + e.message);
-        }
+    // 只在明确点击播放按钮时播放；再次点击可停止或取消等待中的播放。
+    $(document).on('click', '.mm-bubble-play', function(e) {
+        e.preventDefault(); e.stopPropagation();
+        const bubble = this.closest('.mm-bubble');
+        if (bubble) void playBubbleSpeech(bubble);
     });
 });
 
@@ -3676,9 +3747,8 @@ async function vcStartCall() {
     }
 
     // 停止当前正在播放的普通 TTS
-    activeAudio.pause();
-    activeAudio.src = '';
-    playbackQueue.length = 0;
+    stopMessagePlayback();
+    refreshSpeechPanelStatus();
 
     vcSetState('connecting');
 

@@ -24,20 +24,29 @@ export function mockFiles() {
     return { files, requests, fetchImpl };
 }
 
-export async function loadIndex({ fetchImpl, settings = {}, ttStore = null, fetchRemoteImpl = fetchRemote } = {}) {
+export async function loadIndex({
+    fetchImpl, settings = {}, ttStore = null, fetchRemoteImpl = fetchRemote,
+    hostContext = {}, AudioImpl = class {},
+    documentImpl = { getElementById: () => null, querySelector: () => null, querySelectorAll: () => [] },
+} = {}) {
     const source = (await readFile(new URL('../../index.js', import.meta.url), 'utf8'))
         .replace(/^import .*;\r?\n/gm, '');
     const context = vm.createContext({
         Blob, Response, Headers, AbortSignal, URL, console, setTimeout, clearTimeout,
         fetch: fetchImpl,
-        Audio: class {},
+        Audio: AudioImpl,
+        document: documentImpl,
         window: ttStore ? { __TAURITAVERN__: { api: { extension: { store: ttStore } } } } : {},
         jQuery: () => {},
+        getContext: () => hostContext,
         extension_settings: { minimax_quote_tts: settings },
         getRequestHeaders: () => ({ 'X-CSRF-Token': 'test-token' }),
         saveSettingsDebounced: () => {},
         toastr: { warning() {}, success() {}, error() {} },
-        fetchRemoteWithRetry: fetchRemoteImpl, miniMaxHost, fetchLlmResponse,
+        fetchRemoteWithRetry: fetchRemoteImpl, miniMaxHost,
+        fetchLlmResponse: (url, options, hostOptions) => fetchLlmResponse(
+            url, options, fetchImpl ? { ...hostOptions, fetchImpl } : hostOptions,
+        ),
         createHostFileStore: options => createHostFileStore({
             ...options, fetchImpl,
             encodeBlob: async blob => Buffer.from(await blob.arrayBuffer()).toString('base64'),
@@ -49,7 +58,10 @@ export async function loadIndex({ fetchImpl, settings = {}, ttStore = null, fetc
             localStoreGetJson, localStoreSetJson, localStoreGetBlob, localStoreSetBlob,
             favoriteRequest, getFavoriteAudioBlob, uploadToSTServer, getAudioCacheStatsUnified,
             cleanupAudioCacheUnified, migrateLegacyStorage, vrmServerUpload, loadConfiguredVrmModel,
-            requestTtsAudioBlob, isBubbleCached,
+            requestTtsAudioBlob, isBubbleCached, formatWithSecondaryApi, generateMessageSpeech,
+            playBubbleSpeech: (...args) => playBubbleSpeech(...args),
+            stopMessagePlayback, playGeneratedMessage, getMessageData,
+            setCachedAudio(item, blob) { localAudioCache.set(audioCacheKey(item), blob); },
             getSettings: s,
             setVrmModule(module) { vrmModule = module; },
             skipBrowserMigration() { readLegacyBrowserValue = async () => true; },
